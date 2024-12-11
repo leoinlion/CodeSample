@@ -1,0 +1,91 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+
+#define RTP_HEADER_SIZE 12
+#define RTP_MAX_PAYLOAD_SIZE 1400 // Typical MTU considerations
+
+// RTP Header structure
+struct RTPHeader {
+    unsigned char vpxcc;
+    unsigned char mpt;
+    unsigned short seq_num;
+    unsigned int timestamp;
+    unsigned int ssrc;
+};
+
+// Function to initialize the RTP header
+void init_rtp_header(struct RTPHeader *header, unsigned int ssrc, unsigned int timestamp, unsigned short seq_num, int payload_type, int marker) {
+    header->vpxcc = 0x80; // Version 2, no padding, no extensions, 0 CSRC count
+    header->mpt = (marker << 7) | payload_type;
+    header->seq_num = htons(seq_num);
+    header->timestamp = htonl(timestamp);
+    header->ssrc = htonl(ssrc);
+}
+
+// Function to send H.265 NALU as RTP packets
+void send_h265_rtp(int sock, struct sockaddr_in *dest_addr, unsigned char *data, int len, unsigned int ssrc, unsigned short *seq_num, unsigned int *timestamp, int payload_type) {
+    unsigned char rtp_packet[RTP_HEADER_SIZE + RTP_MAX_PAYLOAD_SIZE];
+    struct RTPHeader *rtp_header = (struct RTPHeader *)rtp_packet;
+    int offset = 0;
+
+    while (offset < len) {
+        int payload_size = (len - offset) > RTP_MAX_PAYLOAD_SIZE ? RTP_MAX_PAYLOAD_SIZE : (len - offset);
+
+        // Set the RTP header
+        init_rtp_header(rtp_header, ssrc, *timestamp, *seq_num, payload_type, (offset + payload_size == len));
+
+        // Copy the payload
+        memcpy(rtp_packet + RTP_HEADER_SIZE, data + offset, payload_size);
+
+        // Send the packet
+        int packet_size = RTP_HEADER_SIZE + payload_size;
+        if (sendto(sock, rtp_packet, packet_size, 0, (struct sockaddr *)dest_addr, sizeof(struct sockaddr_in)) < 0) {
+            perror("sendto failed");
+            return;
+        }
+
+        // Update state
+        offset += payload_size;
+        (*seq_num)++;
+    }
+}
+
+int main() {
+    const char *dest_ip = "192.168.1.100"; // Change to your destination IP
+    int dest_port = 5004;                  // Change to your destination port
+
+    int sock;
+    struct sockaddr_in dest_addr;
+    unsigned char h265_data[2048]; // Placeholder for actual H.265 data
+    int h265_data_len = 2048;      // Replace with the actual length of H.265 data
+
+    unsigned int ssrc = 123456; // Random SSRC identifier
+    unsigned short seq_num = 0; // Starting sequence number
+    unsigned int timestamp = 0; // Initial timestamp
+    int payload_type = 96;      // Dynamic payload type for H.265
+
+    // Initialize UDP socket
+    if ((sock = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
+        perror("socket creation failed");
+        exit(EXIT_FAILURE);
+    }
+
+    memset(&dest_addr, 0, sizeof(dest_addr));
+    dest_addr.sin_family = AF_INET;
+    dest_addr.sin_port = htons(dest_port);
+    if (inet_pton(AF_INET, dest_ip, &dest_addr.sin_addr) <= 0) {
+        perror("invalid address");
+        exit(EXIT_FAILURE);
+    }
+
+    // Send H.265 data as RTP packets
+    send_h265_rtp(sock, &dest_addr, h265_data, h265_data_len, ssrc, &seq_num, &timestamp, payload_type);
+
+    // Close socket
+    close(sock);
+
+    return 0;
+}
